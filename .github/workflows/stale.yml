@@ -1,4 +1,4 @@
-name: Stale
+name: Automation - Stale Issues and PRs
 
 on:
   schedule:
@@ -10,11 +10,13 @@ permissions:
 
 jobs:
   stale:
+    name: Close Stale Issues and PRs
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Close stale issues and PRs
-        uses: actions/stale@v11
+        uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11
         with:
           days-before-stale: 60
           days-before-close: 14
