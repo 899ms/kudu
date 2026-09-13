@@ -1,6 +1,6 @@
 import { applyCacheResetPolicy } from './cache-reset-policy'
+import { chmod, rm, rmdir, stat, lstat, readdir, open, unlink } from 'fs/promises'
 import { createReceipt } from './cleanup-receipts'
-import { chmod, rm, rmdir, stat, lstat, readdir, open } from 'fs/promises'
 import { constants, existsSync } from 'fs'
 import type { Dirent, Stats } from 'fs'
 import { dirname, join, resolve, sep } from 'path'
@@ -13,7 +13,7 @@ import type {
   DeletionOrigin
 } from '../../shared/types'
 import type { AppCacheDef, DirectFileMatch, RecursivePathMatch } from '../platform/types'
-import { getCachedItems, removeCachedItems } from './scan-cache'
+import { getCachedItems, removeCachedItems, validateCachedItem } from './scan-cache'
 import { getSettings } from './settings-store'
 import { recordDeletions } from './deletion-log-store'
 import { CooperativeScheduler } from './cooperative-scheduler'
@@ -156,8 +156,9 @@ export function isExcluded(filePath: string, exclusions: string[]): boolean {
  * Overwrite a single file's contents with random data, then zeros, before deletion.
  * For directories, recursively overwrite all files within.
  */
-async function secureOverwrite(filePath: string): Promise<void> {
+async function secureOverwrite(filePath: string, fileOnly = false): Promise<void> {
   const stats = await lstat(filePath)
+  if (fileOnly && !stats.isFile()) return
   // Unlink aliases normally; overwriting them would alter data owned by another
   // path. Check ancestors too, since lstat only inspects the final component.
   if (stats.isSymbolicLink() || (stats.isFile() && stats.nlink !== 1)) return
@@ -227,13 +228,29 @@ async function secureOverwrite(filePath: string): Promise<void> {
   }
 }
 
-export async function safeDelete(filePath: string): Promise<DeleteResult> {
+export async function safeDelete(filePath: string, fileOnly = false): Promise<DeleteResult> {
   const settings = getSettings()
   if (settings.cleaner.secureDelete) {
     try {
-      await secureOverwrite(filePath)
+      await secureOverwrite(filePath, fileOnly)
     } catch {
       // If overwrite fails (e.g. permission), still attempt normal deletion
+    }
+  }
+
+  if (fileOnly) {
+    // unlink cannot recursively remove a file that became a directory after preview.
+    // No chmod/retry: a replaced directory must not have its permissions changed,
+    // and an already-removed file must not be counted as another deletion.
+    try {
+      await unlink(filePath)
+      return { path: filePath, success: true }
+    } catch (error) {
+      return {
+        path: filePath,
+        success: false,
+        reason: deleteFailureReason(error as FilesystemFailure)
+      }
     }
   }
 
@@ -380,6 +397,14 @@ async function cleanItemsNow(
   }
 
   const processItem = async (item: ScanItem): Promise<void> => {
+    const guardFailure = await validateCachedItem(item)
+    if (guardFailure) {
+      filesSkipped++
+      errors.push({ path: item.path, reason: guardFailure })
+      consumedIds.push(item.id)
+      onProgress?.(filesDeleted + filesSkipped, validIds.length, item.path, totalCleaned)
+      return
+    }
     if (item.cacheReset && origin === 'cloud') {
       receipt.add(item, 'skipped', 'local-selection-required')
       filesSkipped++
@@ -493,7 +518,15 @@ async function cleanItemsNow(
       return
     }
 
-    const result = await safeDelete(item.path)
+    const finalGuardFailure = await validateCachedItem(item)
+    if (finalGuardFailure) {
+      filesSkipped++
+      errors.push({ path: item.path, reason: finalGuardFailure })
+      consumedIds.push(item.id)
+      onProgress?.(filesDeleted + filesSkipped, validIds.length, item.path, totalCleaned)
+      return
+    }
+    const result = await safeDelete(item.path, item.fileOnly === true)
     if (result.success) {
       receipt.add(item, 'deleted', '', true, measuredSize)
       totalCleaned += measuredSize
