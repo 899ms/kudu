@@ -2,6 +2,24 @@ const assert = require('node:assert/strict')
 const { execFileSync } = require('node:child_process')
 const { verifyReleaseArtifacts, verifyUploadedAssets } = require('./release-artifacts')
 
+function findRelease(gh, repo, tag) {
+  // GitHub's tag endpoint excludes drafts. List releases with authentication,
+  // then use the stable release ID for all subsequent publication checks.
+  const releases = gh(
+    'api',
+    '--paginate',
+    `repos/${repo}/releases?per_page=100`,
+    '--jq',
+    '.[] | {id, tag_name, draft} | @json'
+  )
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+  const matches = releases.filter((release) => release.tag_name === tag)
+  assert.equal(matches.length, 1, `Expected exactly one release for ${tag}`)
+  return matches[0]
+}
+
 async function main() {
   const tag = process.env.TAG_NAME
   const repo = process.env.GITHUB_REPOSITORY
@@ -10,7 +28,8 @@ async function main() {
   console.log(`Verified ${assets.length} artifacts, including all four update manifests`)
   const gh = (...args) =>
     execFileSync('gh', args, { encoding: 'utf8', timeout: 20 * 60 * 1000 }).trim()
-  const getRelease = () => JSON.parse(gh('api', `repos/${repo}/releases/tags/${tag}`))
+  const { id } = findRelease(gh, repo, tag)
+  const getRelease = () => JSON.parse(gh('api', `repos/${repo}/releases/${id}`))
   const release = getRelease()
   assert(release.draft, `Release ${tag} is already public; refusing to replace its assets`)
   gh('release', 'upload', tag, '--repo', repo, '--clobber', ...assets.map((asset) => asset.path))
@@ -35,7 +54,11 @@ async function main() {
   console.log(`Published ${tag} after verifying every uploaded artifact checksum`)
 }
 
-main().catch((error) => {
-  console.error(error)
-  process.exitCode = 1
-})
+module.exports = { findRelease }
+
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error)
+    process.exitCode = 1
+  })
+}
