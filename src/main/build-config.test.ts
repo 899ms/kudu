@@ -2,6 +2,10 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'fs'
 import path from 'path'
 import { load } from 'js-yaml'
+import { Platform } from 'app-builder-lib'
+import { Arch } from 'builder-util'
+import { configureBuildCommand, createYargs, normalizeOptions } from 'electron-builder/out/builder'
+import { computeArchToTargetNamesMap } from 'app-builder-lib/out/targets/targetFactory'
 
 // Guards the packaging invariants that only show up once a user runs the
 // installer — nothing in the app's own code paths can catch a regression here.
@@ -29,6 +33,26 @@ function option(key: string, name: string): string | undefined {
 }
 
 describe('electron-builder.yml', () => {
+  it.each([
+    ['ubuntu-latest', Arch.x64],
+    ['ubuntu-24.04-arm', Arch.arm64]
+  ])('builds only native Linux release targets on %s', (runner, architecture) => {
+    const release = load(
+      readFileSync(path.resolve(__dirname, '../../.github/workflows/release.yml'), 'utf8')
+    ) as any
+    const job = release.jobs.build.strategy.matrix.include.find((job: any) => job.os === runner)
+    const args = configureBuildCommand(createYargs()).parseSync(job['build-args'].split(/\s+/))
+    const options = normalizeOptions(args)
+    // Exercise electron-builder's actual config fallback: architecture flags
+    // alone still expand the two architectures declared in electron-builder.yml.
+    const targets = computeArchToTargetNamesMap(
+      options.targets!.get(Platform.LINUX)!,
+      { platformSpecificBuildOptions: (load(CONFIG) as any).linux } as any,
+      Platform.LINUX
+    )
+    expect([...targets]).toEqual([[architecture, ['AppImage', 'deb']]])
+  })
+
   it('requests admin for the app executable', () => {
     // Kudu edits HKLM, system directories and other machine-wide state, so the
     // manifest asks for elevation rather than re-launching at runtime.
@@ -95,7 +119,7 @@ describe('electron-builder.yml', () => {
     ) as any
     expect(release.jobs.build.strategy.matrix.include).toContainEqual({
       os: 'ubuntu-24.04-arm',
-      'build-args': '--linux --arm64'
+      'build-args': '--linux AppImage deb --arm64'
     })
     const buildSteps = release.jobs.build.steps as { run?: string }[]
     const packaging = buildSteps.map((step) => step.run || '').join('\n')

@@ -4,23 +4,36 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing unpublished release tag to rebuild with this workflow
+        required: true
+        type: string
 
 permissions:
   contents: read
 
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
 # A newer run must never interrupt signing or publication of this tag.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   validate:
     name: Validate Release
     uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ inputs.tag || github.sha }}
 
   package-smoke:
     name: Verify Packaging
     uses: ./.github/workflows/package-smoke.yml
+    with:
+      ref: ${{ inputs.tag || github.sha }}
 
   create-release:
     name: Prepare Draft Release
@@ -35,6 +48,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          ref: ${{ inputs.tag || github.sha }}
           fetch-depth: 0
 
       - name: Setup Node.js
@@ -46,7 +60,7 @@ jobs:
       - name: Verify tag and prepare draft release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ github.ref_name }}
+          TAG_NAME: ${{ env.RELEASE_TAG }}
         run: node scripts/prepare-release.js
 
   build:
@@ -60,12 +74,12 @@ jobs:
             build-args: --win
           - os: macos-latest
             build-args: --mac
-          # Arch flags keep each Linux runner on its native CPU — building both
-          # arches on one host breaks better-sqlite3 / yara native rebuilds.
+          # Explicit targets prevent the config's target.arch lists from adding
+          # the other architecture despite --x64/--arm64. Keep builds native.
           - os: ubuntu-latest
-            build-args: --linux --x64
+            build-args: --linux AppImage deb --x64
           - os: ubuntu-24.04-arm
-            build-args: --linux --arm64
+            build-args: --linux AppImage deb --arm64
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -75,6 +89,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          ref: ${{ inputs.tag || github.sha }}
           fetch-depth: 0
 
       - name: Setup Node.js
@@ -149,6 +164,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          ref: ${{ inputs.tag || github.sha }}
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -167,7 +183,7 @@ jobs:
       - name: Verify artifacts and manifests, upload, then publish
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ github.ref_name }}
+          TAG_NAME: ${{ env.RELEASE_TAG }}
         run: node scripts/publish-release.js release-artifacts
 
   deploy-website:
@@ -188,11 +204,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          ref: ${{ inputs.tag || github.sha }}
 
       - name: Get version from tag
         id: version
         shell: bash
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Download installer and compute checksum
         shell: pwsh
@@ -236,7 +253,7 @@ jobs:
     steps:
       - name: Get version from tag
         id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Download release artifacts
         env:
@@ -308,7 +325,7 @@ jobs:
       - name: Get version from tag
         id: version
         shell: bash
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Sync winget-pkgs fork with upstream
         shell: bash
