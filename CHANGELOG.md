@@ -1,3 +1,22 @@
+# [3.0.0](https://github.com/adventdevinc/kudu/compare/v2.9.0...v3.0.0) (2026-09-13)
+
+
+### Bug Fixes
+
+* **empty-folders:** protect system and application subtrees ([#427](https://github.com/adventdevinc/kudu/issues/427)) ([db246b9](https://github.com/adventdevinc/kudu/commit/db246b9572390b3239d75d0a4e429a5344b6a207))
+* **large-files:** revalidate scanned selections before deletion ([#426](https://github.com/adventdevinc/kudu/issues/426)) ([9e7be45](https://github.com/adventdevinc/kudu/commit/9e7be450d4d3ac25ea9a9f272362a362866ecec9))
+
+
+### Features
+
+* **cleaner:** add cleanup receipts and targeted retries ([#428](https://github.com/adventdevinc/kudu/issues/428)) ([5b3eeb6](https://github.com/adventdevinc/kudu/commit/5b3eeb612d6af487a09359f9f5d39c22a02aaed9))
+* **performance:** add consented Cloud AI diagnostics ([#432](https://github.com/adventdevinc/kudu/issues/432)) ([a51ce78](https://github.com/adventdevinc/kudu/commit/a51ce789df33759be1a12c9b5cc1f591fabbfbd0))
+* **recovery:** add recovery centre for supported Windows changes ([#429](https://github.com/adventdevinc/kudu/issues/429)) ([6c3080c](https://github.com/adventdevinc/kudu/commit/6c3080cf6614abfbc90d505aec207d145fda53ec))
+* **rules:** add a free visual custom-cleaner builder ([#433](https://github.com/adventdevinc/kudu/issues/433)) ([78f53fd](https://github.com/adventdevinc/kudu/commit/78f53fd09418590bb8961ed854733ef1cc96c4ad))
+* **scheduler:** add free run conditions and ordered workflows ([#430](https://github.com/adventdevinc/kudu/issues/430)) ([cafa568](https://github.com/adventdevinc/kudu/commit/cafa5687ad3d9cda55f3fe564c0022008952a7d5))
+* **storage:** add local storage history and growth comparisons ([#431](https://github.com/adventdevinc/kudu/issues/431)) ([db7f186](https://github.com/adventdevinc/kudu/commit/db7f1867a942e793803afae46346386c1315611e))
+* **ui:** redesign Kudu with Simple and Advanced dashboard views ([#435](https://github.com/adventdevinc/kudu/issues/435)) ([488c2ad](https://github.com/adventdevinc/kudu/commit/488c2adc72e5ad710b3978b2c0f884a4285f34e5))
+* **ui:** remove custom cleaners and polish Cloud upgrade flows ([#437](https://github.com/adventdevinc/kudu/issues/437)) ([3f4ff7c](https://github.com/adventdevinc/kudu/commit/3f4ff7c55aba5156e22f8c958647bb562d43698f))
 # [2.9.0](https://github.com/adventdevinc/kudu/compare/v2.8.0...v2.9.0) (2026-09-12)
 
 
