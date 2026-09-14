@@ -1,3 +1,13 @@
+# [3.1.0](https://github.com/adventdevinc/kudu/compare/v3.0.0...v3.1.0) (2026-09-14)
+
+
+### Bug Fixes
+
+* **database:** run VACUUM in a spawned helper process ([#440](https://github.com/adventdevinc/kudu/issues/440)) ([8314d63](https://github.com/adventdevinc/kudu/commit/8314d633757a7196161f2822f04c3cd34f36ad05))
+* **portable:** add Windows ZIP and guard updates and startup ([#441](https://github.com/adventdevinc/kudu/issues/441)) ([5ef5b97](https://github.com/adventdevinc/kudu/commit/5ef5b97d052eca2440363e35ef46ba2d17471eda))
+* **release:** isolate Linux architectures and support tagged recovery ([d310a3e](https://github.com/adventdevinc/kudu/commit/d310a3e665dbc9c56d197a3372c94e3c80a1846f))
+* **release:** resolve drafts by ID and reuse verified builds ([3a4d8f7](https://github.com/adventdevinc/kudu/commit/3a4d8f7e16b230f50baa0361615aa2090c6eb7ba))
+* **release:** resume distribution after recovered publication ([e061b0f](https://github.com/adventdevinc/kudu/commit/e061b0f544fdec6f11eb5481544a2431b140c978))
 # [3.0.0](https://github.com/adventdevinc/kudu/compare/v2.9.0...v3.0.0) (2026-09-13)
 
 
