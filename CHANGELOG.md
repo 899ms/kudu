@@ -1,3 +1,11 @@
+# [3.2.0](https://github.com/adventdevinc/kudu/compare/v3.1.0...v3.2.0) (2026-09-16)
+
+
+### Bug Fixes
+
+* **cve:** recompute summary after multipage CLI merge ([#447](https://github.com/adventdevinc/kudu/issues/447)) ([e26f9a9](https://github.com/adventdevinc/kudu/commit/e26f9a9f57de5e28ac071c8ee4e0d66489190a96))
+* **cve:** skip MSI SystemComponent apps in installed inventory ([#448](https://github.com/adventdevinc/kudu/issues/448)) ([4df1a11](https://github.com/adventdevinc/kudu/commit/4df1a113ee6528edd795493c742fe14047960310))
+* **repair:** parse WinRE status without English labels ([#449](https://github.com/adventdevinc/kudu/issues/449)) ([e1f3b54](https://github.com/adventdevinc/kudu/commit/e1f3b543bf4f2635142e34dc665d2b5165da643e))
 # [3.1.0](https://github.com/adventdevinc/kudu/compare/v3.0.0...v3.1.0) (2026-09-14)
 
 
