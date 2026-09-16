@@ -19,8 +19,7 @@ export interface WinReInfo {
   error?: string
 }
 
-const UNREADABLE =
-  'reagentc /info did not report a recognisable status (needs an elevated shell)'
+const UNREADABLE = 'reagentc /info did not report a recognisable status (needs an elevated shell)'
 
 /** Map reagentc status tokens (EN + common translations) to the CLI enum. */
 const STATUS_BY_TOKEN: Record<string, WinReStatus> = {
