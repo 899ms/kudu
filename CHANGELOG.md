@@ -1,3 +1,16 @@
+# [3.3.0](https://github.com/adventdevinc/kudu/compare/v3.2.0...v3.3.0) (2026-09-17)
+
+
+### Bug Fixes
+
+* **darwin:** check privacy settings without root-only tools ([#461](https://github.com/adventdevinc/kudu/issues/461)) ([6bb0e60](https://github.com/adventdevinc/kudu/commit/6bb0e60ea5ca0d5c779ed3f58f715b29b809d906))
+* **recovery:** treat tasks without Settings/Enabled as enabled ([#458](https://github.com/adventdevinc/kudu/issues/458)) ([4980288](https://github.com/adventdevinc/kudu/commit/49802883e7e1f5bc130769a4b001ad09953772b5))
+* **repair:** decode UTF-16LE sfc.exe output so non-Latin logs render correctly ([#457](https://github.com/adventdevinc/kudu/issues/457)) ([42e3473](https://github.com/adventdevinc/kudu/commit/42e34733acf666dba3ce6e8e3984845564b61f48))
+
+
+### Features
+
+* **sidebar:** make schedules promo card dismissible ([#460](https://github.com/adventdevinc/kudu/issues/460)) ([189437e](https://github.com/adventdevinc/kudu/commit/189437eed2acb5d5dbbd0a3148a70723aa99eb36))
 # [3.2.0](https://github.com/adventdevinc/kudu/compare/v3.1.0...v3.2.0) (2026-09-16)
 
 
