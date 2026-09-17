@@ -120,14 +120,43 @@ async function elevatedDefaultsDelete(domain: string, key: string): Promise<void
 }
 
 // ─── systemsetup helpers ────────────────────────────────────
-
-async function systemsetupGet(flag: string): Promise<string> {
-  const { stdout } = await execFileAsync('/usr/sbin/systemsetup', [flag], { timeout: 5_000 })
-  return stdout.trim()
-}
+// Note: there is deliberately no unprivileged `systemsetup -getX` helper.
+// On modern macOS the tool refuses to run without root ("You need
+// administrator access to run this tool"), so a check() built on it always
+// reports "unprotected" — even right after a successful elevated apply, which
+// the UI then surfaces as "try running as administrator". Read the underlying
+// state (launchd / pmset) instead; see isLaunchdServiceEnabled below.
 
 async function systemsetupSet(flag: string, ...args: string[]): Promise<void> {
   await elevatedExec('/usr/sbin/systemsetup', [flag, ...args])
+}
+
+// ─── launchd service state helper ───────────────────────────
+// Reads launchd's system override table, which is readable without root.
+// Falls back to probing the service's TCP port: launchd holds the listening
+// socket whenever the service is enabled, so this works before any connection.
+
+async function isLaunchdServiceEnabled(label: string, fallbackPort: number): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync('/bin/launchctl', ['print-disabled', 'system'], {
+      timeout: 5_000
+    })
+    // Newer macOS prints `=> enabled|disabled`; older prints `=> true|false`
+    // (true = disabled, since this is the *disabled* table).
+    const escaped = label.replace(/\./g, '\\.')
+    const match = stdout.match(new RegExp(`"${escaped}"\\s*=>\\s*(enabled|disabled|true|false)`))
+    if (match) return match[1] === 'enabled' || match[1] === 'false'
+  } catch {
+    /* fall through to port probe */
+  }
+  try {
+    await execFileAsync('/usr/bin/nc', ['-z', '-w', '1', '127.0.0.1', String(fallbackPort)], {
+      timeout: 5_000
+    })
+    return true
+  } catch {
+    return false
+  }
 }
 
 // ─── socketfilterfw (Application Firewall) helpers ──────────
@@ -202,15 +231,17 @@ async function isBrowserInstalled(bundleId: string): Promise<boolean> {
 
 // ─── SSH config helper (macOS) ──────────────────────────────
 
+const SSHD_LABEL = 'com.openssh.sshd'
+
 async function applySshdDirective(directive: string, value: string): Promise<void> {
   const content = await readFile('/etc/ssh/sshd_config', 'utf8')
   const updated = updateSshdConfig(content, directive, value)
   await elevatedWriteFile('/etc/ssh/sshd_config', updated)
   // Reload sshd via launchctl
   try {
-    await elevatedExec('/bin/launchctl', ['kickstart', '-k', 'system/com.openssh.sshd'])
+    await elevatedExec('/bin/launchctl', ['kickstart', '-k', `system/${SSHD_LABEL}`])
   } catch {
-    await elevatedExec('/bin/launchctl', ['stop', 'com.openssh.sshd']).catch(() => {})
+    await elevatedExec('/bin/launchctl', ['stop', SSHD_LABEL]).catch(() => {})
   }
 }
 
@@ -587,6 +618,54 @@ const CHROME_BUNDLE_ID = 'com.google.Chrome'
 const FIREFOX_BUNDLE_ID = 'org.mozilla.firefox'
 const MANAGED_PREFS = '/Library/Managed Preferences'
 
+// Write a managed-preference policy key as root in a single elevation prompt.
+// cfprefsd creates the plist owner-only (0600), so neither the browser (running
+// as the user) nor our unprivileged check() can read it back — the toggle then
+// looks like it "didn't take" even though the password was accepted. Explicitly
+// chmod 644 so the policy is actually visible.
+async function managedPrefWrite(
+  domain: string,
+  key: string,
+  type: string,
+  value: string
+): Promise<void> {
+  await elevatedBatch([
+    { cmd: '/bin/mkdir', args: ['-p', MANAGED_PREFS] },
+    {
+      cmd: '/usr/bin/defaults',
+      args: ['write', `${MANAGED_PREFS}/${domain}`, key, `-${type}`, value]
+    },
+    { cmd: '/bin/chmod', args: ['644', `${MANAGED_PREFS}/${domain}.plist`] }
+  ])
+}
+
+// Read a boolean policy key back. Prefer plutil, which reads the file
+// directly and so isn't affected by the user cfprefsd's cached view of a file
+// root just replaced; fall back to `defaults read` for older macOS.
+// Returns null when the key/file is absent or unreadable.
+async function managedPrefBool(domain: string, key: string): Promise<boolean | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      '/usr/bin/plutil',
+      ['-extract', key, 'raw', '-o', '-', `${MANAGED_PREFS}/${domain}.plist`],
+      { timeout: 5_000 }
+    )
+    const val = stdout.trim()
+    if (val === 'true' || val === '1') return true
+    if (val === 'false' || val === '0') return false
+  } catch {
+    /* fall through */
+  }
+  try {
+    const val = await defaultsRead(`${MANAGED_PREFS}/${domain}`, key)
+    if (val === '1') return true
+    if (val === '0') return false
+  } catch {
+    /* absent or unreadable */
+  }
+  return null
+}
+
 const DARWIN_BROWSER_SETTINGS: PrivacySettingDef[] = [
   {
     id: 'macos-safari-dnt',
@@ -614,30 +693,10 @@ const DARWIN_BROWSER_SETTINGS: PrivacySettingDef[] = [
     requiresAdmin: true,
     async check() {
       if (!(await isBrowserInstalled(CHROME_BUNDLE_ID))) return true
-      try {
-        const val = await defaultsRead(
-          `${MANAGED_PREFS}/com.google.Chrome`,
-          'MetricsReportingEnabled'
-        )
-        return val === '0'
-      } catch {
-        return false
-      }
+      return (await managedPrefBool('com.google.Chrome', 'MetricsReportingEnabled')) === false
     },
     async apply() {
-      await elevatedBatch([
-        { cmd: '/bin/mkdir', args: ['-p', MANAGED_PREFS] },
-        {
-          cmd: '/usr/bin/defaults',
-          args: [
-            'write',
-            `${MANAGED_PREFS}/com.google.Chrome`,
-            'MetricsReportingEnabled',
-            '-bool',
-            'false'
-          ]
-        }
-      ])
+      await managedPrefWrite('com.google.Chrome', 'MetricsReportingEnabled', 'bool', 'false')
     }
   },
   {
@@ -648,30 +707,18 @@ const DARWIN_BROWSER_SETTINGS: PrivacySettingDef[] = [
     requiresAdmin: true,
     async check() {
       if (!(await isBrowserInstalled(CHROME_BUNDLE_ID))) return true
-      try {
-        const val = await defaultsRead(
-          `${MANAGED_PREFS}/com.google.Chrome`,
-          'SafeBrowsingExtendedReportingEnabled'
-        )
-        return val === '0'
-      } catch {
-        return false
-      }
+      return (
+        (await managedPrefBool('com.google.Chrome', 'SafeBrowsingExtendedReportingEnabled')) ===
+        false
+      )
     },
     async apply() {
-      await elevatedBatch([
-        { cmd: '/bin/mkdir', args: ['-p', MANAGED_PREFS] },
-        {
-          cmd: '/usr/bin/defaults',
-          args: [
-            'write',
-            `${MANAGED_PREFS}/com.google.Chrome`,
-            'SafeBrowsingExtendedReportingEnabled',
-            '-bool',
-            'false'
-          ]
-        }
-      ])
+      await managedPrefWrite(
+        'com.google.Chrome',
+        'SafeBrowsingExtendedReportingEnabled',
+        'bool',
+        'false'
+      )
     }
   },
   {
@@ -682,27 +729,10 @@ const DARWIN_BROWSER_SETTINGS: PrivacySettingDef[] = [
     requiresAdmin: true,
     async check() {
       if (!(await isBrowserInstalled(FIREFOX_BUNDLE_ID))) return true
-      try {
-        const val = await defaultsRead(`${MANAGED_PREFS}/org.mozilla.firefox`, 'DisableTelemetry')
-        return val === '1'
-      } catch {
-        return false
-      }
+      return (await managedPrefBool('org.mozilla.firefox', 'DisableTelemetry')) === true
     },
     async apply() {
-      await elevatedBatch([
-        { cmd: '/bin/mkdir', args: ['-p', MANAGED_PREFS] },
-        {
-          cmd: '/usr/bin/defaults',
-          args: [
-            'write',
-            `${MANAGED_PREFS}/org.mozilla.firefox`,
-            'DisableTelemetry',
-            '-bool',
-            'true'
-          ]
-        }
-      ])
+      await managedPrefWrite('org.mozilla.firefox', 'DisableTelemetry', 'bool', 'true')
     }
   }
 ]
@@ -738,12 +768,8 @@ const DARWIN_KERNEL_SETTINGS: PrivacySettingDef[] = [
     description: 'Disable remote Apple Events to prevent remote automation of your Mac',
     requiresAdmin: true,
     async check() {
-      try {
-        const out = await systemsetupGet('-getremoteappleevents')
-        return out.toLowerCase().includes('off')
-      } catch {
-        return false
-      }
+      // Remote Apple Events is the com.apple.AEServer launchd job (eppc, port 3031)
+      return !(await isLaunchdServiceEnabled('com.apple.AEServer', 3031))
     },
     async apply() {
       await systemsetupSet('-setremoteappleevents', 'off')
@@ -756,9 +782,12 @@ const DARWIN_KERNEL_SETTINGS: PrivacySettingDef[] = [
     description: 'Disable wake on network access to prevent remote wake-ups',
     requiresAdmin: true,
     async check() {
+      // `pmset -g` is readable without root; `womp` is the Wake-on-LAN flag
       try {
-        const out = await systemsetupGet('-getwakeonnetworkaccess')
-        return out.toLowerCase().includes('off')
+        const { stdout } = await execFileAsync('/usr/bin/pmset', ['-g'], { timeout: 5_000 })
+        const match = stdout.match(/^\s*womp\s+(\d)/m)
+        // No womp entry = hardware has no wake-on-network support = nothing to disable
+        return match == null || match[1] === '0'
       } catch {
         return false
       }
@@ -912,15 +941,21 @@ const DARWIN_ACCESS_SETTINGS: PrivacySettingDef[] = [
       'Disable the SSH server entirely. If you need SSH access, leave this off and harden SSH settings instead',
     requiresAdmin: true,
     async check() {
-      try {
-        const out = await systemsetupGet('-getremotelogin')
-        return out.toLowerCase().includes('off')
-      } catch {
-        return false
-      }
+      return !(await isLaunchdServiceEnabled(SSHD_LABEL, 22))
     },
     async apply() {
-      await elevatedExec('/usr/sbin/systemsetup', ['-f', '-setremotelogin', 'off'])
+      // systemsetup is the documented way, but on Ventura+ it needs Full Disk
+      // Access for the *calling* process — which the osascript elevation
+      // trampoline doesn't inherit — and can silently no-op. Follow up with the
+      // launchd calls it performs under the hood so the result is deterministic.
+      await elevatedExec('/bin/sh', [
+        '-c',
+        [
+          '/usr/sbin/systemsetup -f -setremotelogin off >/dev/null 2>&1 || true',
+          `/bin/launchctl disable system/${SSHD_LABEL}`,
+          `/bin/launchctl bootout system/${SSHD_LABEL} >/dev/null 2>&1 || true`
+        ].join('; ')
+      ])
     }
   },
   {
