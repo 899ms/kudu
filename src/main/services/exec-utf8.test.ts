@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { execTracked, spawnTrackedLines } from './exec-utf8'
+import { execTracked, spawnTrackedLines, ConsoleOutputDecoder } from './exec-utf8'
 
 // Drive a real child process — the point of spawnTrackedLines is its handling
 // of stdout chunking, exit codes, timeouts and aborts, none of which a mocked
@@ -121,5 +121,43 @@ describe('spawnTrackedLines', () => {
     await expect(
       spawnTrackedLines('kudu-no-such-binary-xyz', [], () => {}, { timeout: 5_000 })
     ).rejects.toThrow()
+  })
+})
+
+describe('ConsoleOutputDecoder', () => {
+  it('decodes UTF-8 output when no control bytes are present', () => {
+    const d = new ConsoleOutputDecoder()
+    const text = 'Проверка 42% complete'
+    const bytes = Buffer.from(text, 'utf-8')
+    // split inside a multi-byte sequence to exercise chunk boundaries
+    expect(d.write(bytes.subarray(0, 3)) + d.write(bytes.subarray(3)) + d.end()).toBe(text)
+  })
+
+  it('decodes UTF-16LE output as emitted by sfc.exe on a redirected stdout', () => {
+    const d = new ConsoleOutputDecoder()
+    const text = 'Начато сканирование системы. Windows 42% complete'
+    const bytes = Buffer.from(text, 'utf16le')
+    // odd split leaves half a code unit pending
+    expect(d.write(bytes.subarray(0, 7)) + d.write(bytes.subarray(7)) + d.end()).toBe(text)
+  })
+
+  it('strips a UTF-16LE BOM', () => {
+    const d = new ConsoleOutputDecoder()
+    const bytes = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('ok', 'utf16le')])
+    expect(d.write(bytes) + d.end()).toBe('ok')
+  })
+})
+
+describe('ConsoleOutputDecoder (chunk boundaries)', () => {
+  it('waits for a second byte before sniffing so a lone leading byte cannot mis-select UTF-8', () => {
+    const d = new ConsoleOutputDecoder()
+    const bytes = Buffer.from('\r\nVerification 1% complete.', 'utf16le')
+    const out = d.write(bytes.subarray(0, 1)) + d.write(bytes.subarray(1)) + d.end()
+    expect(out).toBe('\r\nVerification 1% complete.')
+  })
+
+  it('flushes a single held byte as UTF-8 on end', () => {
+    const d = new ConsoleOutputDecoder()
+    expect(d.write(Buffer.from('x')) + d.end()).toBe('x')
   })
 })
