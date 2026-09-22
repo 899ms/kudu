@@ -1,3 +1,16 @@
+# [3.4.0](https://github.com/adventdevinc/kudu/compare/v3.3.0...v3.4.0) (2026-09-22)
+
+
+### Bug Fixes
+
+* **game-mode:** make Nagle restore idempotent and surface the real PowerShell error ([#471](https://github.com/adventdevinc/kudu/issues/471)) ([876a18c](https://github.com/adventdevinc/kudu/commit/876a18c4063716257e1b75f789f87ec524fa2419))
+* **scanner:** suppress noisy SUSP_XORed_URL_In_EXE false positives ([#470](https://github.com/adventdevinc/kudu/issues/470)) ([e1421d2](https://github.com/adventdevinc/kudu/commit/e1421d2f4d8b2e46ba50531e8d4273bec2cd586f))
+* **updater:** surface winget scan failures and parse localised tables ([#474](https://github.com/adventdevinc/kudu/issues/474)) ([ce052a4](https://github.com/adventdevinc/kudu/commit/ce052a4783660b30dcf9f3bc72ca967cf4244cee))
+
+
+### Features
+
+* **drivers:** allow ignoring driver updates and hide them from Windows Update ([#473](https://github.com/adventdevinc/kudu/issues/473)) ([b6a4e44](https://github.com/adventdevinc/kudu/commit/b6a4e44a8ea396ccb1ee5ad83627c6434aea66e0))
 # [3.3.0](https://github.com/adventdevinc/kudu/compare/v3.2.0...v3.3.0) (2026-09-17)
 
 
