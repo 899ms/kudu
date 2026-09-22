@@ -7,7 +7,19 @@ import prettier from 'eslint-config-prettier'
 
 export default tseslint.config(
   {
-    ignores: ['out/**', 'dist/**', 'release/**', 'node_modules/**', 'test-results/**', 'docs/**']
+    ignores: [
+      'out/**',
+      'dist/**',
+      'release/**',
+      'node_modules/**',
+      'test-results/**',
+      'docs/**',
+      // Local-only scratch dirs (git-ignored); never part of CI
+      '.claude/**',
+      '.tmp/**',
+      'cloud/**',
+      'manifests/**'
+    ]
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

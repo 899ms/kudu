@@ -17,3 +17,7 @@ choco/
 *.yml
 *.yaml
 src/renderer/src/locales/
+.claude/
+.tmp/
+cloud/
+manifests/
