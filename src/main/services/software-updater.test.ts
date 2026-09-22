@@ -23,6 +23,8 @@ import {
   isValidAppId,
   isValidAppIdForSource,
   classifyScoopUpdate,
+  comparePackageVersions,
+  displayWidth,
   groupWindowsUpdateItems,
   BREW_PATH_CANDIDATES
 } from './software-updater'
@@ -188,6 +190,132 @@ describe('parseWingetUpgradeOutput', () => {
     expect(apps[0].currentVersion).toBe('1.11.0')
     expect(apps[0].availableVersion).toBe('1.11.1')
   })
+
+  // #462 — the full output from the report, including the msstore row, the
+  // "< version" row, and the multi-line footers after the count line.
+  it('parses the full output from issue #462 including footers', () => {
+    const output = [
+      'Name                Id                       Version        Available       Source',
+      '------------------------------------------------------------------------------------',
+      'Adobe Acrobat DC    XPDP273C0XHQH2           20.006.20042    26.001.21691    msstore',
+      'Antigravity 2.13.0  Google.Antigravity       2.13.0          2.15.0          winget',
+      'Core FTP Pro (x64)  CoreFTP.CoreFTP          < 2.2.1960      2.2.1960        winget',
+      'DLSS Updater        Recol.DLSSUpdater        5.0.1           5.0.3           winget',
+      'Docker Desktop      Docker.DockerDesktop     4.55.0          4.91.0          winget',
+      'EA app              ElectronicArts.EADesktop 13.788.2.6298   13.791.0.6304    winget',
+      'GitHub CLI          GitHub.cli               2.100.0         2.101.0          winget',
+      'GitHub Desktop      GitHub.GitHubDesktop     3.6.5           3.6.6            winget',
+      'OpenCode 1.18.30    SST.OpenCodeDesktop      1.18.30         1.18.31         winget',
+      'Postman x64 12.28.0 Postman.Postman          12.28.0         12.28.6         winget',
+      'Sunshine            LizardByte.Sunshine      2026.516.143833 2026.914.233613 winget',
+      '',
+      '11 updates available.',
+      '',
+      '7 packages have version numbers that cannot be determined.',
+      'Use --include-unknown to show all results.',
+      '',
+      '2 packages have updates that are blocked because the newer versions',
+      'use a different installer technology than the currently installed version.',
+      'Uninstall each package, then install the latest version.'
+    ].join('\r\n')
+
+    const apps = parseWingetUpgradeOutput(output)
+    // Core FTP is "< 2.2.1960 → 2.2.1960": winget can't tell, so it's skipped
+    expect(apps.map((a) => a.id)).toEqual([
+      'XPDP273C0XHQH2',
+      'Google.Antigravity',
+      'Recol.DLSSUpdater',
+      'Docker.DockerDesktop',
+      'ElectronicArts.EADesktop',
+      'GitHub.cli',
+      'GitHub.GitHubDesktop',
+      'SST.OpenCodeDesktop',
+      'Postman.Postman',
+      'LizardByte.Sunshine'
+    ])
+    expect(apps[0].source).toBe('msstore')
+    expect(apps[8].name).toBe('Postman x64')
+  })
+
+  it('parses localised (Italian) headers by column position', () => {
+    const output = [
+      'Nome                Id                       Versione       Disponibile     Origine',
+      '------------------------------------------------------------------------------------',
+      'GitHub CLI          GitHub.cli               2.100.0        2.101.0         winget',
+      'Docker Desktop      Docker.DockerDesktop     4.55.0         4.91.0          winget',
+      '2 aggiornamenti disponibili.'
+    ].join('\n')
+
+    const apps = parseWingetUpgradeOutput(output)
+    expect(apps).toHaveLength(2)
+    expect(apps[0]).toMatchObject({
+      id: 'GitHub.cli',
+      currentVersion: '2.100.0',
+      availableVersion: '2.101.0',
+      source: 'winget'
+    })
+  })
+
+  it('parses localised (German) headers with footers', () => {
+    const output = [
+      'Name                ID                       Version        Verfügbar       Quelle',
+      '------------------------------------------------------------------------------------',
+      'GitHub CLI          GitHub.cli               2.100.0        2.101.0         winget',
+      '1 Upgrades verfügbar.',
+      '3 Pakete haben Versionsnummern, die nicht ermittelt werden können.',
+      'Verwenden Sie --include-unknown, um alle Ergebnisse anzuzeigen.'
+    ].join('\n')
+
+    const apps = parseWingetUpgradeOutput(output)
+    expect(apps.map((a) => a.id)).toEqual(['GitHub.cli'])
+  })
+
+  // Winget pads its table to terminal columns, and CJK glyphs take two of
+  // them. Laying the fixture out by display column is what the real console
+  // does — a parser that counts string indexes shears every later column.
+  it('parses a Japanese table where headers and names are double-width', () => {
+    const COLUMN_STARTS = [0, 22, 44, 60, 78]
+    const row = (cells: string[]): string =>
+      cells
+        .reduce(
+          (line, text, i) =>
+            line.padEnd(COLUMN_STARTS[i] - displayWidth(line) + line.length) + text,
+          ''
+        )
+        .trimEnd()
+
+    const output = [
+      row(['名前', 'ID', 'バージョン', '利用可能', 'ソース']),
+      '-'.repeat(96),
+      row(['メモ帳', 'Notepad.Notepad', '11.2401.25.0', '11.2412.16.0', 'winget']),
+      row(['GitHub CLI', 'GitHub.cli', '2.100.0', '2.101.0', 'winget']),
+      '2 個のアップグレードが利用可能です。'
+    ].join('\r\n')
+
+    const apps = parseWingetUpgradeOutput(output)
+    expect(apps).toHaveLength(2)
+    expect(apps[0]).toMatchObject({
+      id: 'Notepad.Notepad',
+      name: 'メモ帳',
+      currentVersion: '11.2401.25.0',
+      availableVersion: '11.2412.16.0',
+      source: 'winget'
+    })
+    expect(apps[1]).toMatchObject({ id: 'GitHub.cli', currentVersion: '2.100.0' })
+  })
+
+  it('ignores spinner noise and blank lines before the table', () => {
+    const output = [
+      '   \\',
+      '   -\r   |\r',
+      '',
+      'Name    Id           Version     Available   Source',
+      '------------------------------------------------------',
+      'App     Some.App     1.0.0       2.0.0       winget'
+    ].join('\n')
+
+    expect(parseWingetUpgradeOutput(output).map((a) => a.id)).toEqual(['Some.App'])
+  })
 })
 
 // ─── parseWingetListOutput ──────────────────────────────────
@@ -225,6 +353,56 @@ describe('parseWingetListOutput', () => {
     ].join('\n')
 
     expect(parseWingetListOutput(output)).toEqual([])
+  })
+
+  it('parses localised headers by column position', () => {
+    const output = [
+      'Nome              ID                    Versione   Disponibile  Origine',
+      '---------------------------------------------------------------------',
+      'Google Chrome     Google.Chrome         121.0.0                 winget',
+      'Node.js           OpenJS.NodeJS         20.10.0                 winget'
+    ].join('\n')
+
+    const apps = parseWingetListOutput(output)
+    expect(apps.map((a) => a.id)).toEqual(['Google.Chrome', 'OpenJS.NodeJS'])
+    expect(apps[1]).toMatchObject({ version: '20.10.0', source: 'winget' })
+  })
+})
+
+// ─── comparePackageVersions ─────────────────────────────────
+
+describe('comparePackageVersions', () => {
+  it('orders version components numerically, not lexicographically', () => {
+    expect(comparePackageVersions('1.10.0.0', '1.9.0.0')).toBeGreaterThan(0)
+    expect(comparePackageVersions('1.9.0.0', '1.10.0.0')).toBeLessThan(0)
+    expect(comparePackageVersions('1.22.10820.0', '1.22.10820.0')).toBe(0)
+  })
+
+  it('treats missing trailing components as zero', () => {
+    expect(comparePackageVersions('1.22', '1.22.0.0')).toBe(0)
+    expect(comparePackageVersions('1.22.1', '1.22')).toBeGreaterThan(0)
+  })
+
+  it('sorts DesktopAppInstaller package folders newest first', () => {
+    const folders = [
+      'Microsoft.DesktopAppInstaller_1.9.25180.0_x64__8wekyb3d8bbwe',
+      'Microsoft.DesktopAppInstaller_1.10.40010.0_x64__8wekyb3d8bbwe',
+      'Microsoft.DesktopAppInstaller_1.22.10820.0_x64__8wekyb3d8bbwe'
+    ]
+    const version = (f: string): string => f.split('_')[1]
+    const sorted = [...folders].sort((a, b) => comparePackageVersions(version(b), version(a)))
+    expect(sorted.map(version)).toEqual(['1.22.10820.0', '1.10.40010.0', '1.9.25180.0'])
+  })
+})
+
+// ─── displayWidth ───────────────────────────────────────────
+
+describe('displayWidth', () => {
+  it('counts CJK and fullwidth glyphs as two columns', () => {
+    expect(displayWidth('Name')).toBe(4)
+    expect(displayWidth('名前')).toBe(4)
+    expect(displayWidth('バージョン')).toBe(10)
+    expect(displayWidth('メモ帳 x')).toBe(8)
   })
 })
 
