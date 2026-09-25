@@ -2184,6 +2184,14 @@ async function runLegacyScanClean(
       needsElevation: false
     }
     if (fileItemIds.length > 0) fileCleaned = await cleanItems(fileItemIds, undefined, 'cli')
+    const trashPath = getPlatform().paths.trashPath()
+    if (trashPath && allResults.some((r) => r.category === CleanerType.RecycleBin)) {
+      const { pruneOrphanedTrashInfo, trashEntryNames } = await import('./services/trash-info')
+      const cleanedPaths = allResults
+        .filter((r) => r.category === CleanerType.RecycleBin)
+        .flatMap((r) => r.items.map((i) => i.path))
+      await pruneOrphanedTrashInfo(trashPath, trashEntryNames(trashPath, cleanedPaths))
+    }
     if (hasRecycleBin) {
       const rbResult = allResults.find((r) => r.category === CleanerType.RecycleBin)
       const { recordNativeCleanup } = await import('./services/cleanup-receipts')
