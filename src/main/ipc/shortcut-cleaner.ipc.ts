@@ -14,15 +14,16 @@ import { validateStringArray } from '../services/ipc-validation'
 import type { ScanItem, ScanResult, CleanResult } from '../../shared/types'
 import type { WindowGetter } from './index'
 import { psUtf8 } from '../services/exec-utf8'
+import {
+  checkShortcutTarget,
+  probePath,
+  type PathState,
+  type ShortcutInfo
+} from '../services/shortcut-target'
 
 const execFileAsync = promisify(execFile)
 
 // ── Shortcut target resolution ──
-
-interface ShortcutInfo {
-  path: string
-  targetPath: string | null
-}
 
 /**
  * Resolve the target of a Windows .lnk shortcut using PowerShell.
@@ -195,42 +196,6 @@ function getShortcutDirs(): { path: string; subcategory: string }[] {
   ]
 }
 
-// ── Check if a shortcut target is broken ──
-
-/** Windows Start Menu subdirectories that contain built-in OS shortcuts */
-const WIN_SYSTEM_SUBDIRS =
-  /\\(System Tools|Administrative Tools|Accessibility|Windows PowerShell|Windows System|Windows Accessories)\\/i
-
-function isTargetBroken(info: ShortcutInfo): boolean {
-  if (process.platform === 'win32') {
-    // Never flag shortcuts in built-in Windows Start Menu subdirectories
-    if (WIN_SYSTEM_SUBDIRS.test(info.path)) return false
-    // A .lnk with a stored filesystem path returns it from WScript.Shell even
-    // when the file is gone, so an empty TargetPath means the shortcut targets
-    // a shell namespace item (File Explorer, This PC, Recycle Bin, etc.) which
-    // we can't verify via the filesystem — leave it alone.
-    if (!info.targetPath) return false
-    // Never flag shortcuts pointing to Windows system executables
-    if (/\\Windows\\/i.test(info.targetPath)) return false
-  }
-  // If we couldn't resolve the target at all, consider it broken
-  if (!info.targetPath) return true
-  // Empty target
-  if (info.targetPath.trim() === '') return true
-  // Skip URLs and special targets
-  if (/^https?:\/\//i.test(info.targetPath)) return false
-  if (/^[a-z]+:/i.test(info.targetPath) && !info.targetPath.startsWith('/')) return false
-  // Skip Windows UWP / shell: / explorer targets — these don't have normal file paths
-  if (/^shell:/i.test(info.targetPath)) return false
-  if (/^microsoft\./i.test(info.targetPath)) return false
-  // Skip targets that reference Windows Apps store folder (UWP apps)
-  if (/\\WindowsApps\\/i.test(info.targetPath)) return false
-  // Linux: if the target was resolved via PATH (not an absolute path), it's valid
-  if (process.platform !== 'win32' && !info.targetPath.startsWith('/')) return false
-  // Check if the target exists on disk
-  return !existsSync(info.targetPath)
-}
-
 // ── IPC registration ──
 
 export function registerShortcutCleanerIpc(getWindow: WindowGetter): void {
@@ -241,6 +206,14 @@ export function registerShortcutCleanerIpc(getWindow: WindowGetter): void {
     const dirs = getShortcutDirs()
     const isWin = process.platform === 'win32'
     const isMac = process.platform === 'darwin'
+
+    // One lookup per path per scan: many shortcuts share a drive root.
+    const probed = new Map<string, Promise<PathState>>()
+    const probe = (path: string): Promise<PathState> => {
+      let state = probed.get(path)
+      if (!state) probed.set(path, (state = probePath(path)))
+      return state
+    }
 
     for (const dir of dirs) {
       try {
@@ -255,7 +228,7 @@ export function registerShortcutCleanerIpc(getWindow: WindowGetter): void {
 
         const brokenItems: ScanItem[] = []
         for (const sc of shortcuts) {
-          if (isTargetBroken(sc)) {
+          if (await checkShortcutTarget(sc, process.platform, probe)) {
             let size = 0
             try {
               const s = await stat(sc.path)
