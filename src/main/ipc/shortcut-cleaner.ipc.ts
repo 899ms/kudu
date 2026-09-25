@@ -9,7 +9,8 @@ import { homedir } from 'os'
 import { IPC } from '../../shared/channels'
 import { CleanerType } from '../../shared/enums'
 import { cacheItems, clearCachedCategory } from '../services/scan-cache'
-import { cleanItems } from '../services/file-utils'
+import { cleanItems, expandExclusions, isExcluded, resolveScanRoot } from '../services/file-utils'
+import { getSettings } from '../services/settings-store'
 import { validateStringArray } from '../services/ipc-validation'
 import type { ScanItem, ScanResult, CleanResult } from '../../shared/types'
 import type { WindowGetter } from './index'
@@ -27,20 +28,53 @@ const execFileAsync = promisify(execFile)
 
 /**
  * Resolve the target of a Windows .lnk shortcut using PowerShell.
- * Returns target paths for all .lnk files in the given directory.
+ * Returns target paths for all .lnk files in the given directory. Excluded
+ * folders are pruned inside the walk, so they are never enumerated or opened.
  */
-async function resolveWinShortcuts(dir: string): Promise<ShortcutInfo[]> {
+export async function resolveWinShortcuts(
+  dir: string,
+  exclusions: string[] = []
+): Promise<ShortcutInfo[]> {
   if (!existsSync(dir)) return []
+  // Every result is a .lnk, so a *.lnk exclusion rules out the whole folder.
+  if (
+    isExcluded(
+      join(dir, 'x.lnk'),
+      exclusions.filter((e) => e.startsWith('*.'))
+    )
+  )
+    return []
+  // Path exclusions travel as base64 JSON data, never as script text.
+  const pruned = exclusions
+    .filter((e) => !e.startsWith('*.'))
+    .map((e) => e.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase())
+  const payload = Buffer.from(JSON.stringify(pruned), 'utf8').toString('base64')
   try {
-    // PowerShell script to resolve all .lnk targets in the directory
     const psScript = `
 $shell = New-Object -ComObject WScript.Shell
-Get-ChildItem -Path '${dir.replace(/'/g, "''")}' -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-  try {
-    $sc = $shell.CreateShortcut($_.FullName)
-    "$($_.FullName)|$($sc.TargetPath)"
-  } catch { "$($_.FullName)|" }
-}`
+$ex = @([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json)
+function Skip($p) {
+  $l = $p.ToLowerInvariant()
+  foreach ($e in $ex) { if ($l -eq $e -or $l.StartsWith($e + [char]92)) { return $true } }
+  return $false
+}
+function Walk($d) {
+  Get-ChildItem -LiteralPath $d -ErrorAction SilentlyContinue | ForEach-Object {
+    if (Skip $_.FullName) { return }
+    if ($_.PSIsContainer) {
+      # Never follow junctions or directory symlinks: the alias could lead
+      # into an excluded tree, or loop back on itself.
+      if (-not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint)) { Walk $_.FullName }
+    }
+    elseif ($_.Extension -ieq '.lnk') {
+      try {
+        $sc = $shell.CreateShortcut($_.FullName)
+        "$($_.FullName)|$($sc.TargetPath)"
+      } catch { "$($_.FullName)|" }
+    }
+  }
+}
+Walk '${dir.replace(/'/g, "''")}'`
     const { stdout } = await execFileAsync(
       'powershell.exe',
       ['-NoProfile', '-Command', psUtf8(psScript)],
@@ -74,7 +108,10 @@ function binaryExistsInPath(binary: string): boolean {
   return false
 }
 
-async function resolveLinuxDesktopFiles(dir: string): Promise<ShortcutInfo[]> {
+async function resolveLinuxDesktopFiles(
+  dir: string,
+  exclusions: string[] = []
+): Promise<ShortcutInfo[]> {
   if (!existsSync(dir)) return []
   const results: ShortcutInfo[] = []
   try {
@@ -82,6 +119,8 @@ async function resolveLinuxDesktopFiles(dir: string): Promise<ShortcutInfo[]> {
     for (const entry of entries) {
       if (!entry.name.endsWith('.desktop')) continue
       const fullPath = join(dir, entry.name)
+      // Never open an excluded entry
+      if (isExcluded(fullPath, exclusions)) continue
       try {
         const content = await readFile(fullPath, 'utf-8')
         const execMatch = content.match(/^Exec\s*=\s*(.+)$/m)
@@ -115,13 +154,15 @@ async function resolveLinuxDesktopFiles(dir: string): Promise<ShortcutInfo[]> {
 /**
  * Resolve macOS alias/symlink targets in a directory.
  */
-async function resolveMacAliases(dir: string): Promise<ShortcutInfo[]> {
+async function resolveMacAliases(dir: string, exclusions: string[] = []): Promise<ShortcutInfo[]> {
   if (!existsSync(dir)) return []
   const results: ShortcutInfo[] = []
   try {
     const entries = await readdir(dir, { withFileTypes: true })
     for (const entry of entries) {
       const fullPath = join(dir, entry.name)
+      // Never read an excluded entry
+      if (isExcluded(fullPath, exclusions)) continue
       try {
         if (entry.isSymbolicLink()) {
           const target = await readlink(fullPath)
@@ -206,6 +247,7 @@ export function registerShortcutCleanerIpc(getWindow: WindowGetter): void {
     const dirs = getShortcutDirs()
     const isWin = process.platform === 'win32'
     const isMac = process.platform === 'darwin'
+    const exclusions = await expandExclusions(getSettings().exclusions)
 
     // One lookup per path per scan: many shortcuts share a drive root.
     const probed = new Map<string, Promise<PathState>>()
@@ -216,18 +258,25 @@ export function registerShortcutCleanerIpc(getWindow: WindowGetter): void {
     }
 
     for (const dir of dirs) {
+      // Never enumerate a globally excluded shortcut directory. Resolve it
+      // first: a Desktop that is a link into an excluded tree must not be read
+      // (or cleaned) through its alias.
+      const root = await resolveScanRoot(dir.path, exclusions)
+      if (!root) continue
       try {
         let shortcuts: ShortcutInfo[]
         if (isWin) {
-          shortcuts = await resolveWinShortcuts(dir.path)
+          shortcuts = await resolveWinShortcuts(root, exclusions)
         } else if (isMac) {
-          shortcuts = await resolveMacAliases(dir.path)
+          shortcuts = await resolveMacAliases(root, exclusions)
         } else {
-          shortcuts = await resolveLinuxDesktopFiles(dir.path)
+          shortcuts = await resolveLinuxDesktopFiles(root, exclusions)
         }
 
         const brokenItems: ScanItem[] = []
         for (const sc of shortcuts) {
+          // Windows enumerates recursively, so also drop shortcuts in excluded subfolders
+          if (isExcluded(sc.path, exclusions)) continue
           if (await checkShortcutTarget(sc, process.platform, probe)) {
             let size = 0
             try {
@@ -289,6 +338,7 @@ export function registerShortcutCleanerIpc(getWindow: WindowGetter): void {
         errors: [],
         needsElevation: false
       }
+    // cleanItems re-resolves exclusions (aliases included) and records receipts.
     return cleanItems(valid, (processed, total, currentPath, cleanedSize) => {
       const win = getWindow()
       if (win && !win.isDestroyed())

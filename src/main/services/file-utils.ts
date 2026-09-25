@@ -1,5 +1,5 @@
 import { applyCacheResetPolicy } from './cache-reset-policy'
-import { chmod, rm, rmdir, stat, lstat, readdir, open } from 'fs/promises'
+import { chmod, rm, rmdir, stat, lstat, readdir, open, realpath } from 'fs/promises'
 import { createReceipt } from './cleanup-receipts'
 import { constants, existsSync } from 'fs'
 import type { Dirent, Stats } from 'fs'
@@ -224,6 +224,94 @@ export async function deletionTouchesExclusions(
     return code !== 'ENOENT' && code !== 'ENOTDIR'
   }
   return walk(targetPath)
+}
+
+/**
+ * The exclusion list plus the real location of every path entry that exists.
+ * Tools that walk real paths need both forms: an exclusion may have been
+ * written through an alias (a symlink, a junction, or a Windows 8.3 short
+ * name such as RUNNER~1) that never appears in a resolved path.
+ */
+/**
+ * Resolving every exclusion is filesystem work, and cleaners call this per item.
+ * A result is reused for up to a second for the same exclusion list, so a large
+ * clean does one expansion per second rather than one per item, while an
+ * exclusion added or retargeted mid-run still takes effect within that second.
+ */
+const EXPANSION_TTL_MS = 1000
+let lastExpansion: { key: string; at: number; result: Promise<string[]> } | null = null
+
+export function expandExclusions(exclusions: string[]): Promise<string[]> {
+  const key = JSON.stringify(exclusions)
+  const now = Date.now()
+  if (lastExpansion && lastExpansion.key === key && now - lastExpansion.at < EXPANSION_TTL_MS)
+    return lastExpansion.result
+  const result = expandExclusionsNow(exclusions)
+  lastExpansion = { key, at: now, result }
+  // A failed expansion must not be reused.
+  result.catch(() => {
+    if (lastExpansion?.result === result) lastExpansion = null
+  })
+  return result
+}
+
+async function expandExclusionsNow(exclusions: string[]): Promise<string[]> {
+  const expanded = new Set(exclusions)
+  for (const exc of exclusions) {
+    if (exc.startsWith('*.')) continue
+    const real = await realpathOfLongestPrefix(exc)
+    if (real) expanded.add(real)
+  }
+  return [...expanded]
+}
+
+/**
+ * The real location of `path`, resolving its longest existing prefix when the
+ * rest doesn't exist yet: an exclusion for `/alias/empty/reserved` (with
+ * `/alias` -> `/real`) must still protect `/real/empty/reserved`.
+ */
+async function realpathOfLongestPrefix(path: string): Promise<string | null> {
+  const missing: string[] = []
+  let current = resolve(path)
+  for (;;) {
+    try {
+      return join(await realpath(current), ...missing.reverse())
+    } catch {
+      const parent = dirname(current)
+      if (parent === current) return null
+      missing.push(current.slice(parent.length).replace(/^[\\/]+/, ''))
+      current = parent
+    }
+  }
+}
+
+/**
+ * Resolve a user-chosen scan folder to its real path, or null when the folder
+ * is missing or excluded under either name. Walking the real path means every
+ * result, and every later exclusion check, sees the canonical location rather
+ * than an alias (symlink, junction) into an excluded tree.
+ */
+export async function resolveScanRoot(dir: string, exclusions: string[]): Promise<string | null> {
+  if (isExcluded(dir, exclusions)) return null
+  try {
+    const real = await realpath(dir)
+    return isExcluded(real, exclusions) ? null : real
+  } catch {
+    return null
+  }
+}
+
+/** isExcluded for a path about to be deleted: checks the path and its real location. */
+export async function isExcludedResolved(path: string, exclusions: string[]): Promise<boolean> {
+  if (exclusions.length === 0) return false
+  if (isExcluded(path, exclusions)) return true
+  // Extension patterns match the same file name whatever its location.
+  if (exclusions.every((exc) => exc.startsWith('*.'))) return false
+  try {
+    return isExcluded(await realpath(path), exclusions)
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -507,7 +595,9 @@ async function cleanItemsNow(
       return
     }
 
-    if (isExcluded(item.path, getSettings().exclusions)) {
+    // Re-resolved per item: an exclusion alias added or retargeted while the
+    // run is in progress must still stop this delete.
+    if (await isExcludedResolved(item.path, await expandExclusions(getSettings().exclusions))) {
       receipt.add(item, 'skipped', 'excluded')
       filesSkipped++
       errors.push({ path: item.path, reason: 'excluded' })
@@ -874,7 +964,10 @@ async function revalidateRecencyItem(
   item: ScanItem,
   rootInfo: Stats
 ): Promise<'excluded' | 'recently-modified' | null> {
-  if (isExcluded(item.path, getSettings().exclusions)) return 'excluded'
+  // Checked again immediately before the recursive delete, aliases resolved —
+  // for the item and, below, for everything inside it.
+  const exclusions = await expandExclusions(getSettings().exclusions)
+  if (await isExcludedResolved(item.path, exclusions)) return 'excluded'
   if (rootInfo.isSymbolicLink()) return 'recently-modified'
   if (item.recencyCutoff !== undefined && !Number.isFinite(item.recencyCutoff))
     return 'recently-modified'
@@ -884,7 +977,7 @@ async function revalidateRecencyItem(
 
   const ctx: RecencyScan = {
     cutoff,
-    exclusions: getSettings().exclusions,
+    exclusions,
     remaining: MAX_RECENCY_ITEMS
   }
   const resolved = await resolveChildren(item.path, ctx, MAX_RECENCY_DEPTH)
