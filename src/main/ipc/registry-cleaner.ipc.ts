@@ -26,6 +26,7 @@ import { randomUUID } from 'crypto'
 import type { WindowGetter } from './index'
 import { validateStringArray } from '../services/ipc-validation'
 import { execNativeUtf8, execTracked, psUtf8 } from '../services/exec-utf8'
+import { createPrivateTempDir, removeSeals, sealBackup } from '../services/registry-backup-seal'
 
 const execFileAsync = promisify(execFile)
 
@@ -1902,8 +1903,12 @@ export async function scanRegistry(signal?: AbortSignal): Promise<RegistryEntry[
   return entries
 }
 
-/** Keep only the N most recent backup runs. Each run writes one or more .reg files (and possibly a task-XML dir) sharing one ISO timestamp. */
-function pruneOldBackups(backupDir: string, keep: number): void {
+/**
+ * Keep only the N most recent backup runs. Each run writes one or more .reg files (and possibly a task-XML dir) sharing one ISO timestamp.
+ * Returns the names of the .reg files removed, so their integrity seals can be dropped too.
+ */
+function pruneOldBackups(backupDir: string, keep: number): string[] {
+  const removed: string[] = []
   try {
     const tsCapture = /(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)/
     const regRe = new RegExp(`^registry-backup-.*?${tsCapture.source}\\.reg$`)
@@ -1923,7 +1928,10 @@ function pruneOldBackups(backupDir: string, keep: number): void {
         const full = join(backupDir, f)
         try {
           if (taskDirRe.test(f)) rmSync(full, { recursive: true, force: true })
-          else unlinkSync(full)
+          else {
+            unlinkSync(full)
+            removed.push(f)
+          }
         } catch {
           /* skip */
         }
@@ -1932,6 +1940,7 @@ function pruneOldBackups(backupDir: string, keep: number): void {
   } catch {
     /* skip */
   }
+  return removed
 }
 
 /** Full-hive backup: exports the entire branches that fix operations may modify. Large but exhaustive. */
@@ -2011,6 +2020,17 @@ export function collectBackupTargets(entries: RegistryEntry[]): {
   return { keys: [...keys], tasks: [...tasks] }
 }
 
+/**
+ * The keys that actually hold `key`'s data. HKCR is a merged view of
+ * HKLM\SOFTWARE\Classes and HKCU\SOFTWARE\Classes, and an import into it can't
+ * put a key back into the hive it came from, so HKCR keys are backed up as their
+ * two backing keys instead (whichever exist get exported). Exported for tests.
+ */
+export function backingKeys(key: string): string[] {
+  const m = /^(?:HKCR|HKEY_CLASSES_ROOT)\\(.+)$/i.exec(key)
+  return m ? [`HKLM\\SOFTWARE\\Classes\\${m[1]}`, `HKCU\\SOFTWARE\\Classes\\${m[1]}`] : [key]
+}
+
 /** Strip the optional UTF-16 BOM and the `Windows Registry Editor Version 5.00` header from reg-export text. */
 function stripRegHeader(content: string): string {
   return content.replace(/^\uFEFF?Windows Registry Editor Version 5\.00\r?\n\r?\n/, '')
@@ -2030,11 +2050,22 @@ async function createTargetedBackup(
   const { keys, tasks } = collectBackupTargets(entries)
   if (keys.length === 0 && tasks.length === 0) return
 
-  const tempDir = mkdtempSync(join(tmpdir(), 'kudu-reg-backup-'))
+  // Export into a folder unelevated processes cannot write, so the consolidated
+  // file can be sealed as exactly what reg.exe exported. Without one (not
+  // elevated), fall back to the user's temp folder and leave the backup unsealed:
+  // it is still written, but cannot be restored from inside Kudu.
+  let tempDir: string
+  let sealable = true
+  try {
+    tempDir = await createPrivateTempDir('kudu-reg-backup-')
+  } catch {
+    tempDir = mkdtempSync(join(tmpdir(), 'kudu-reg-backup-'))
+    sealable = false
+  }
   try {
     const bodies: string[] = []
     let idx = 0
-    for (const key of keys) {
+    for (const key of [...new Set(keys.flatMap(backingKeys))]) {
       if (signal?.aborted) break
       const tempPath = join(tempDir, `part-${idx++}.reg`)
       try {
@@ -2046,11 +2077,13 @@ async function createTargetedBackup(
     }
 
     if (bodies.length > 0) {
-      const consolidatedPath = join(backupDir, `registry-backup-targeted-${timestamp}.reg`)
+      const fileName = `registry-backup-targeted-${timestamp}.reg`
       const finalText = 'Windows Registry Editor Version 5.00\r\n\r\n' + bodies.join('')
       const bom = Buffer.from([0xff, 0xfe])
-      const body = Buffer.from(finalText, 'utf16le')
-      writeFileSync(consolidatedPath, Buffer.concat([bom, body]))
+      const bytes = Buffer.concat([bom, Buffer.from(finalText, 'utf16le')])
+      writeFileSync(join(backupDir, fileName), bytes)
+      // Seal the bytes just written, never a re-read of the user-writable folder.
+      if (sealable) await sealBackup(backupDir, fileName, bytes)
     }
 
     if (tasks.length > 0) {
@@ -2161,7 +2194,7 @@ export async function fixRegistryEntries(
     } else {
       await createTargetedBackup(entries, backupDir, timestamp, signal)
     }
-    pruneOldBackups(backupDir, 3)
+    await removeSeals(backupDir, pruneOldBackups(backupDir, 3))
   } catch {
     // Backup failed, but continue
   }
