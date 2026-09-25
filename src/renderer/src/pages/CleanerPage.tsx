@@ -11,6 +11,7 @@ import {
   Link2Off,
   Database,
   Variable,
+  Fingerprint,
   Search,
   Sparkles,
   ChevronRight,
@@ -107,6 +108,12 @@ const categories: CategoryDef[] = [
     labelKey: 'categoryDatabases',
     icon: Database,
     descriptionKey: 'categoryDatabasesDescription'
+  },
+  {
+    type: CleanerType.PrivacyTraces,
+    labelKey: 'categoryPrivacyTraces',
+    icon: Fingerprint,
+    descriptionKey: 'categoryPrivacyTracesDescription'
   }
 ]
 
@@ -349,7 +356,8 @@ export function CleanerPage() {
         [CleanerType.RecycleBin]: () => window.kudu.recycleBinScan(),
         [CleanerType.Shortcut]: () => window.kudu.shortcutScan(),
         [CleanerType.Environment]: () => window.kudu.environmentScan(),
-        [CleanerType.Database]: () => window.kudu.databaseScan()
+        [CleanerType.Database]: () => window.kudu.databaseScan(),
+        [CleanerType.PrivacyTraces]: () => window.kudu.privacyTracesScan()
       }
       for (let ci = 0; ci < scannableCategories.length; ci++) {
         const cat = scannableCategories[ci]
@@ -460,7 +468,8 @@ export function CleanerPage() {
         [CleanerType.RecycleBin]: () => window.kudu.recycleBinClean(),
         [CleanerType.Shortcut]: (ids) => window.kudu.shortcutClean(ids),
         [CleanerType.Environment]: (ids) => window.kudu.environmentClean(ids),
-        [CleanerType.Database]: (ids) => window.kudu.databaseClean(ids)
+        [CleanerType.Database]: (ids) => window.kudu.databaseClean(ids),
+        [CleanerType.PrivacyTraces]: (ids) => window.kudu.privacyTracesClean(ids)
       }
       let totalCleaned = 0,
         totalFiles = 0,
@@ -633,6 +642,10 @@ export function CleanerPage() {
     }
     return store.results.filter((r) => r.category === type)
   }
+  // Privacy traces such as registry lists are counted in entries, not bytes.
+  const entryCountLabel = (count: number) =>
+    t(count === 1 ? 'traceEntryCount' : 'traceEntryCountPlural', { count: formatNumber(count) })
+
   const categoryItemCount = (type: CategoryType) =>
     categoryResults(type).reduce((sum, r) => sum + r.itemCount, 0)
 
@@ -756,7 +769,8 @@ export function CleanerPage() {
                 key={cat.type}
                 onClick={() => setActiveCategory(cat.type)}
                 onContextMenu={(e) => {
-                  if (isProtected) return
+                  // Privacy traces are opt-in per item: no clean-everything shortcut.
+                  if (isProtected || cat.type === CleanerType.PrivacyTraces) return
                   const ids = categoryResults(cat.type).flatMap((r) =>
                     r.items.map((item) => item.id)
                   )
@@ -1038,12 +1052,15 @@ export function CleanerPage() {
                       </div>
                     )}
                   </div>
-                  <button
-                    onClick={toggleActiveCategory}
-                    className="text-[12px] font-medium text-amber-500 hover:text-amber-400"
-                  >
-                    {t('toggleAll')}
-                  </button>
+                  {/* Privacy traces are opted into group by group: no select-everything. */}
+                  {activeCategory !== CleanerType.PrivacyTraces && (
+                    <button
+                      onClick={toggleActiveCategory}
+                      className="text-[12px] font-medium text-amber-500 hover:text-amber-400"
+                    >
+                      {t('toggleAll')}
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -1122,6 +1139,8 @@ export function CleanerPage() {
                               className="flex items-center gap-3 px-4 py-3.5 cursor-pointer"
                               onClick={() => toggleGroup(groupKey)}
                               onContextMenu={(e) => {
+                                // The quick-clean menu would clear traces without selecting them.
+                                if (result.category === CleanerType.PrivacyTraces) return
                                 const ids = result.items.map((item) => item.id)
                                 openContextMenu(e, result.subcategory, ids)
                               }}
@@ -1197,6 +1216,14 @@ export function CleanerPage() {
                                 <span className="text-[13px] font-medium text-zinc-300">
                                   {result.subcategory}
                                 </span>
+                                {result.descriptionKey && (
+                                  <p
+                                    className="mt-1 text-[11px]"
+                                    style={{ color: 'var(--text-muted)' }}
+                                  >
+                                    {t(result.descriptionKey)}
+                                  </p>
+                                )}
                                 {result.items[0]?.cleanupAction && (
                                   <p
                                     className="mt-1 text-[11px]"
@@ -1233,7 +1260,15 @@ export function CleanerPage() {
                               >
                                 {result.items.some((item) => item.cleanupAction)
                                   ? t('maintenanceSizeUnknown', { defaultValue: 'Savings vary' })
-                                  : formatBytes(result.totalSize)}
+                                  : result.items.length > 0 &&
+                                      result.items.every((item) => item.entryCount !== undefined)
+                                    ? entryCountLabel(
+                                        result.items.reduce(
+                                          (sum, item) => sum + (item.entryCount ?? 0),
+                                          0
+                                        )
+                                      )
+                                    : formatBytes(result.totalSize)}
                               </span>
 
                               {/* Open location */}
@@ -1333,7 +1368,9 @@ export function CleanerPage() {
                                           ? t('maintenanceSizeUnknown', {
                                               defaultValue: 'Savings vary'
                                             })
-                                          : formatBytes(item.size)}
+                                          : item.entryCount !== undefined
+                                            ? entryCountLabel(item.entryCount)
+                                            : formatBytes(item.size)}
                                       </span>
                                       {isAbsolutePath(item.path) && (
                                         <button
