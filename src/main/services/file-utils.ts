@@ -152,6 +152,80 @@ export function isExcluded(filePath: string, exclusions: string[]): boolean {
   return false
 }
 
+const EXCLUSION_WALK_LIMIT = 20_000
+
+/**
+ * Whether recursively deleting `targetPath` would remove anything the user
+ * excluded: the path itself, an excluded path beneath it, or a file matching a
+ * `*.ext` pattern somewhere inside. A tree that can't be fully read (or is too
+ * large to check) counts as affected, since its contents can't be vouched for.
+ */
+export async function deletionTouchesExclusions(
+  targetPath: string,
+  exclusions: string[]
+): Promise<boolean> {
+  if (exclusions.length === 0) return false
+  if (isExcluded(targetPath, exclusions)) return true
+
+  const toSep = process.platform === 'win32' ? /\//g : /\\/g
+  const pathSep = process.platform === 'win32' ? '\\' : '/'
+  const target = targetPath
+    .toLowerCase()
+    .replace(toSep, pathSep)
+    .replace(/[\\/]+$/, '')
+  const extPatterns = exclusions.filter((exc) => exc.startsWith('*.'))
+  for (const exc of exclusions) {
+    if (exc.startsWith('*.')) continue
+    const root = exc
+      .toLowerCase()
+      .replace(toSep, pathSep)
+      .replace(/[\\/]+$/, '')
+    if (root.startsWith(target + pathSep)) return true
+  }
+  if (extPatterns.length === 0) return false
+
+  let budget = EXCLUSION_WALK_LIMIT
+  const walk = async (dir: string): Promise<boolean> => {
+    let entries: Dirent[]
+    try {
+      entries = await readdir(dir, { withFileTypes: true })
+    } catch {
+      return true
+    }
+    for (const entry of entries) {
+      if (--budget < 0) return true
+      const child = join(dir, entry.name)
+      if (isExcluded(child, extPatterns)) return true
+      let isDir = entry.isDirectory()
+      let isLink = entry.isSymbolicLink()
+      if (!isDir && !isLink && !entry.isFile()) {
+        // Some FUSE and network filesystems report no entry type; ask directly,
+        // and treat anything that can't be classified as affected.
+        try {
+          const info = await lstat(child)
+          isDir = info.isDirectory()
+          isLink = info.isSymbolicLink()
+        } catch {
+          return true
+        }
+      }
+      // rm unlinks a symlink without touching its target, so don't descend it.
+      if (isDir && !isLink && (await walk(child))) return true
+    }
+    return false
+  }
+
+  try {
+    const root = await lstat(targetPath)
+    if (!root.isDirectory() || root.isSymbolicLink()) return false
+  } catch (err) {
+    // Only a target that is confirmed gone is safe to wave through.
+    const code = (err as NodeJS.ErrnoException).code
+    return code !== 'ENOENT' && code !== 'ENOTDIR'
+  }
+  return walk(targetPath)
+}
+
 /**
  * Overwrite a single file's contents with random data, then zeros, before deletion.
  * For directories, recursively overwrite all files within.
