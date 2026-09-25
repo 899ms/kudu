@@ -8,9 +8,9 @@
 
 | Metric | Count |
 |--------|-------|
-| Unique app rules | 163 |
-| 🪟 Windows rules | 152 |
-| 🍎 macOS rules | 92 |
+| Unique app rules | 164 |
+| 🪟 Windows rules | 153 |
+| 🍎 macOS rules | 93 |
 | 🐧 Linux rules | 91 |
 
 ## AI Tools
@@ -167,6 +167,7 @@
 | Battle.net | ✅ | ❌ | ❌ |
 | EA App | ✅ | ❌ | ❌ |
 | Epic Games Launcher | ✅ | ✅ | ❌ |
+| Epic Games Launcher Web Cache | ✅ | ✅ | ❌ |
 | Fortnite | ✅ | ❌ | ❌ |
 | GOG Galaxy | ✅ | ❌ | ❌ |
 | Heroic Games Launcher | ❌ | ✅ | ✅ |

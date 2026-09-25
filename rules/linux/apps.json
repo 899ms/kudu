@@ -82,6 +82,6 @@
     { "id": "vscode-cpptools", "name": "VS Code C/C++ IntelliSense Cache", "paths": ["${CACHE}/vscode-cpptools/ipch"], "description": "Precompiled header cache from the Microsoft C/C++ extension; rebuilt automatically when files are reopened" },
     { "id": "go-build", "name": "Go Build Cache", "paths": ["${CACHE}/go-build"], "description": "Go compiler build cache (go clean -cache clears this); rebuilt on the next build" },
     { "id": "poetry", "name": "Poetry Cache", "paths": ["${CACHE}/pypoetry/cache", "${CACHE}/pypoetry/artifacts"], "description": "Poetry package metadata and downloaded distribution cache; the virtualenvs folder beside them is left alone" },
-    { "id": "electron", "name": "Electron Runtime Cache", "paths": ["${CACHE}/electron"], "description": "Electron runtime binaries downloaded by @electron/get; re-downloaded on demand" }
+    { "id": "electron", "name": "Electron Runtime Cache", "paths": ["${CACHE}/electron"], "minAgeDays": 7, "description": "Downloaded Electron runtime archives older than one week; re-downloaded on demand. Preserves installed apps and recent downloads." }
   ]
 }
