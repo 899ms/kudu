@@ -127,17 +127,19 @@ export async function runSchedule(payload: ScheduleRunPayload): Promise<void> {
     toast.info(`Running "${payload.scheduleName}"`, { description: 'Scheduled task started...' })
     store.setStatus(ScanStatus.Scanning)
     store.setResults([])
-    // ── Restore point before auto-apply cleaning ──
-    const cleanerTasks = payload.tasks.filter((t) => t.startsWith('cleaner:'))
-    if (payload.autoApply && cleanerTasks.length > 0) {
-      const { createRestorePoint } = useSettingsStore.getState().settings.cleaner
-      if (createRestorePoint) {
-        try {
-          await window.kudu.createRestorePoint(`Kudu scheduled clean — ${payload.scheduleName}`)
-        } catch (error) {
-          if (error instanceof ScheduleConditionChanged) throw error
-          // Best-effort — don't block the clean
-        }
+    // ── Restore point before the first auto-apply clean ──
+    // Created lazily so a run that ends up cleaning nothing (e.g. a scope of
+    // only opt-in cache resets) never pays for a restore point.
+    let restorePointAttempted = false
+    const ensureRestorePoint = async (): Promise<void> => {
+      if (restorePointAttempted) return
+      restorePointAttempted = true
+      if (!useSettingsStore.getState().settings.cleaner.createRestorePoint) return
+      try {
+        await window.kudu.createRestorePoint(`Kudu scheduled clean — ${payload.scheduleName}`)
+      } catch (error) {
+        if (error instanceof ScheduleConditionChanged) throw error
+        // Best-effort — don't block the clean
       }
     }
 
@@ -164,9 +166,18 @@ export async function runSchedule(payload: ScheduleRunPayload): Promise<void> {
           totalSize += size
           totalItems += found
 
-          if (payload.autoApply && found > 0) {
-            const allIds = results.flatMap((r) => r.items.map((i) => i.id))
+          // Cache resets and native maintenance are opt-in: they stay unselected
+          // in the cleaner and need explicit flags in the CLI, so an unattended
+          // run must never pick them up just because they were scanned.
+          const allIds = results.flatMap((r) =>
+            r.items.filter((i) => !i.cacheReset && !i.cleanupAction).map((i) => i.id)
+          )
+          if (payload.autoApply && allIds.length > 0) {
             try {
+              await assertAllowed()
+              await ensureRestorePoint()
+              // Creating a restore point can take a minute; the schedule's
+              // conditions must still hold right before anything is deleted.
               await assertAllowed()
               const cleanResult = await task.clean(allIds)
               if (cleanResult?.errors?.length) status = 'partial'
